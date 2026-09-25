@@ -16,7 +16,7 @@ function fixture() {
     telegram: async (_options, method, fields) => { calls.push([method, fields]); return { ok: true, result: { message_id: 42 } } },
     updates: async () => []
   }
-  const options = { pushoverToken: 'test', pushoverUser: 'test', telegramToken: 'test', telegramChatId: '123', allowedTelegramUsers: ['9'], retrySeconds: 60, expireSeconds: 3600 }
+  const options = { mode: 'active', pushoverToken: 'test', pushoverUser: 'test', telegramToken: 'test', telegramChatId: '123', allowedTelegramUsers: ['9'], retrySeconds: 60, expireSeconds: 3600 }
   const pager = new Pager(directory, options, providers)
   pager.running = true
   return { pager, calls, providers, directory }
@@ -110,4 +110,74 @@ test('provider failure keeps a durable retry job', async () => {
   assert.match(pager.status().lastError, /offline/)
   const restored = new Pager(directory, pager.options, providers)
   assert.equal(restored.store.state.jobs.find(j => j.type === 'pushover-send').attempts, 1)
+})
+
+test('severity promotion from info sends first Pushover page', async () => {
+  const { pager, calls } = fixture()
+  await pager.submit(event('firing', 'one', 'info'))
+  await pager.tick()
+  assert.equal(calls.filter(c => c[0] === 'pushover').length, 0)
+  await pager.submit(event('firing', 'two', 'warning'))
+  await pager.tick()
+  assert.equal(calls.filter(c => c[0] === 'pushover').length, 1)
+  assert.equal(calls.find(c => c[0] === 'pushover')[1].priority, 0)
+})
+
+test('default shadow mode sends Telegram, logs proposed pages and never enqueues a page', async () => {
+  const { directory, providers, calls, pager: active } = fixture()
+  active.stop()
+  const logs = []
+  const { mode, ...options } = active.options
+  const pager = new Pager(directory, options, providers, line => logs.push(line))
+  assert.equal(pager.options.mode, 'shadow')
+  pager.running = true
+  await pager.submit(event('firing', 'one'))
+  await pager.tick()
+  assert.equal(calls.some(c => c[0] === 'pushover'), false)
+  assert.equal(calls.some(c => c[0] === 'sendMessage'), true)
+  assert.equal(pager.store.state.jobs.some(j => j.type === 'pushover-send'), false)
+  assert.match(logs[0], /would-send-priority-2 retry=60s expire=3600s/)
+  await pager.submit(event('resolved', 'two'))
+  assert.match(logs[1], /would-cancel-active-retries/)
+  pager.stop()
+})
+
+test('shadow promotion logs the proposed higher priority', async () => {
+  const { directory, providers, pager: active } = fixture()
+  active.stop()
+  const logs = []
+  const pager = new Pager(directory, { ...active.options, mode: 'shadow' }, providers, line => logs.push(line))
+  await pager.submit(event('firing', 'one', 'warning'))
+  await pager.submit(event('firing', 'two', 'wake'))
+  assert.match(logs[1], /shadow promote .*would-send-priority-2 retry=60s expire=3600s/)
+  assert.equal(pager.store.state.jobs.some(j => j.type === 'pushover-send'), false)
+})
+
+test('activating after shadow only pages on a fresh firing observation', async () => {
+  const { directory, providers, calls, pager: initial } = fixture()
+  initial.stop()
+  const shadow = new Pager(directory, { ...initial.options, mode: 'shadow' }, providers)
+  await shadow.submit(event('firing', 'one'))
+  const active = new Pager(directory, initial.options, providers)
+  active.running = true
+  await active.tick()
+  assert.equal(calls.some(c => c[0] === 'pushover'), false)
+  await active.submit(event('firing', 'two'))
+  await active.tick()
+  assert.equal(calls.filter(c => c[0] === 'pushover').length, 1)
+  active.stop()
+})
+
+test('switching from active to shadow cancels an outstanding emergency retry', async () => {
+  const { directory, providers, calls, pager: active } = fixture()
+  await active.submit(event('firing', 'one'))
+  await active.tick()
+  active.stop()
+  const shadow = new Pager(directory, { ...active.options, mode: 'shadow' }, providers)
+  await shadow.start()
+  await new Promise(resolve => setImmediate(resolve))
+  await shadow.tick()
+  assert.equal(calls.filter(c => c[0] === 'cancel').length, 1)
+  assert.equal(calls.filter(c => c[0] === 'pushover').length, 1)
+  shadow.stop()
 })

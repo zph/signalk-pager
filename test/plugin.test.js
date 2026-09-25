@@ -16,7 +16,8 @@ test('event route rejects missing token and accepts valid event durably', async 
   const plugin = makePlugin(app)
   const routes = {}
   plugin.registerWithRouter({ post: (p, handler) => { routes[p] = handler }, get: (p, handler) => { routes[p] = handler } })
-  plugin.start({ intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user' })
+  assert.throws(() => plugin.start({ intakeToken: 'a'.repeat(32) }), /Configure Telegram/)
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user' })
   const body = { source: 'script', event_id: '1', fingerprint: 'fault', status: 'firing', severity: 'warning', title: 'Fault', summary: 'Check it', observed_at: new Date().toISOString() }
   const unauthorized = response()
   await routes['/v1/events']({ headers: {}, body }, unauthorized)

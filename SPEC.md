@@ -1,6 +1,6 @@
 # Signal K Pager specification
 
-**Status:** Implemented first slice in this directory; phone delivery not yet verified with live credentials.
+**Status:** Implemented first slice in this directory; phone delivery not yet verified with live credentials. Default operating mode is `shadow`.
 **Scope:** A Signal K plugin with one authenticated event endpoint, Pushover paging, Telegram context/ACK, and opt-in exact-path Signal K notification routes.
 
 ## Behavior
@@ -13,7 +13,7 @@ Authenticated event API ────────────┼── Signal K P
                                     └── Telegram: context and restricted ACK
 ```
 
-Pushover is the wake-up path. Telegram provides a short incident record and an `Acknowledge` button. Neither transport replaces the other. The plugin does not send camera images, Signal K deltas, arbitrary logs, or credentials. It does not make distress calls or treat an unreviewed visual detection as an automatic emergency.
+In `active` mode, Pushover is the wake-up path. Telegram provides a short incident record and an `Acknowledge` button. In the default `shadow` mode, Telegram receives the incident and the Signal K log records the Pushover page that would have been sent, including priority and emergency retry/expiry. No new Pushover page is sent in shadow mode. The plugin does not send camera images, Signal K deltas, arbitrary logs, or credentials. It does not make distress calls or treat an unreviewed visual detection as an automatic emergency.
 
 This first version runs **inside Signal K**. If Signal K or its host stops, the plugin stops too. Independent host/Signal K monitoring belongs in a later improvement; it is not a prerequisite for this plugin.
 
@@ -40,12 +40,12 @@ One incident has `open_unacked`, `open_acked`, or `resolved` state. Repeated `fi
 
 ## Configuration and operator drill
 
-- Required: 24+ character event API token; Pushover application token and user/group key.
-- Optional: dedicated Telegram bot token, chat ID, and numeric user IDs allowed to ACK. Use a dedicated bot so another integration does not consume its updates.
+- Required: 24+ character event API token. `shadow` is the default mode; `active` must be selected explicitly and requires Pushover application token and user/group key.
+- For `shadow`: dedicated Telegram bot token, chat ID, and numeric user IDs allowed to ACK are required so the bake-in period has a real delivery channel. Telegram remains optional in `active`. Use a dedicated bot so another integration does not consume its updates.
 - Optional: exact-path Signal K notification rules. Review every `wake` rule; never map all Signal K alarms to emergency priority by default.
 - Phone setup: enable iOS Critical Alerts for Pushover in both iOS and the app, or configure Android DND exception. Provider priority `2` alone does not guarantee DND bypass.
 
-Before relying on the pager, send a controlled test event, observe the phone under mute/Focus, wait for one repeat, acknowledge it, and verify retries stop. Send a separate resolved event and verify the Telegram incident closes. Test with the actual Pushover destination and Telegram chat; mocks cannot prove a phone wakes a person.
+During bake-in, verify Telegram delivery and inspect `shadow` log entries for proposed priority, retry, and expiry. Changing to `active` does not retroactively page existing shadow incidents; a fresh firing observation is required. Returning to `shadow` cancels any outstanding emergency retries. Before relying on the pager, send a controlled active-mode test event, observe the phone under mute/Focus, wait for one repeat, acknowledge it, and verify retries stop. Send a separate resolved event and verify the Telegram incident closes. Test with the actual Pushover destination and Telegram chat; mocks cannot prove a phone wakes a person.
 
 ## Current limits and later improvements
 

@@ -17,6 +17,7 @@ module.exports = function pluginConstructor(app) {
     description: 'Pushover paging with Telegram incident context',
     schema: {
       type: 'object', title: 'Pager', properties: {
+        mode: { type: 'string', title: 'Operating mode', enum: ['shadow', 'active'], default: 'shadow', description: 'Shadow sends Telegram context and logs the Pushover page it would send. Active enables Pushover delivery for new alerts.' },
         intakeToken: { type: 'string', title: 'Event API bearer token', format: 'password', description: 'Use a long random secret. Required for POST /plugins/signalk-pager/v1/events.' },
         pushoverToken: { type: 'string', title: 'Pushover application token', format: 'password' },
         pushoverUser: { type: 'string', title: 'Pushover user/group key', format: 'password' },
@@ -35,11 +36,13 @@ module.exports = function pluginConstructor(app) {
     },
     start(input = {}) {
       if (pager) return
-      const options = { ...input,
+      const options = { mode: 'shadow', ...input,
         allowedTelegramUsers: String(input.allowedTelegramUsers || '').split(',').map(s => s.trim()).filter(Boolean),
         retrySeconds: input.retrySeconds || 60, expireSeconds: input.expireSeconds || 3600 }
       if (!options.intakeToken || options.intakeToken.length < 24) throw new Error('Configure a 24+ character event API token')
-      if (!options.pushoverToken || !options.pushoverUser) throw new Error('Configure Pushover application and user keys')
+      if (options.mode === 'active' && (!options.pushoverToken || !options.pushoverUser)) throw new Error('Configure Pushover application and user keys before activating')
+      if (!['shadow', 'active'].includes(options.mode)) throw new Error('Invalid operating mode')
+      if (options.mode === 'shadow' && !options.telegramToken) throw new Error('Configure Telegram before enabling shadow mode')
       if (options.telegramToken && (!options.telegramChatId || !options.allowedTelegramUsers.length)) throw new Error('Configure Telegram chat and allowed user IDs')
       if (options.retrySeconds < 30 || options.expireSeconds > 10800 || options.expireSeconds < options.retrySeconds) throw new Error('Invalid emergency retry settings')
       rules = new Map()
@@ -48,8 +51,8 @@ module.exports = function pluginConstructor(app) {
         if (rule.path.startsWith('notifications.plugins.signalkPager')) throw new Error('Cannot page on own status')
         rules.set(rule.path, rule.severity)
       }
-      pager = new Pager(app.getDataDirPath(), options)
-      pager.start()
+      pager = new Pager(app.getDataDirPath(), options, undefined, line => console.info(`[signalk-pager] ${line}`))
+      pager.start().catch(error => app.setPluginError?.(`Pager startup: ${error.message}`))
       if (rules.size && app.subscriptionmanager?.subscribe) {
         app.subscriptionmanager.subscribe({ context: 'vessels.self', sourcePolicy: 'preferred',
           subscribe: [...rules.keys()].map(path => ({ path, policy: 'instant' })) },
@@ -66,7 +69,7 @@ module.exports = function pluginConstructor(app) {
           }
         })
       }
-      app.setPluginStatus?.('Pager active')
+      app.setPluginStatus?.(`Pager ${options.mode}`)
     },
     stop() {
       while (unsubscribes.length) unsubscribes.pop()?.()
