@@ -8,6 +8,26 @@ function safeEqual(a, b) {
   return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right)
 }
 
+function createNotificationApi(app) {
+  return {
+    acknowledge(id, path) {
+      if (!app.notifications?.getPath || !app.notifications?.acknowledge) throw new Error('Signal K notification management is unavailable')
+      const current = app.notifications.getPath(path)?.[id]
+      if (!current || current.path !== path || current.context !== 'vessels.self' ||
+          ['normal', 'nominal'].includes(current.value?.state)) throw new Error('Signal K notification is no longer active at this path')
+      if (current.value?.status?.acknowledged === true) return
+      app.notifications.acknowledge(id)
+    },
+    idForPath(path, value) {
+      if (!app.notifications?.getPath) return null
+      const matches = Object.entries(app.notifications.getPath(path) || {})
+        .filter(([, item]) => item.path === path && item.context === 'vessels.self' && !['normal', 'nominal'].includes(item.value?.state))
+      if (value?.id && matches.some(([id]) => id === value.id)) return value.id
+      return matches.length === 1 ? matches[0][0] : null
+    }
+  }
+}
+
 module.exports = function pluginConstructor(app) {
   let pager = null
   let unsubscribes = []
@@ -51,7 +71,8 @@ module.exports = function pluginConstructor(app) {
         if (rule.path.startsWith('notifications.plugins.signalkPager')) throw new Error('Cannot page on own status')
         rules.set(rule.path, rule.severity)
       }
-      pager = new Pager(app.getDataDirPath(), options, undefined, line => console.info(`[signalk-pager] ${line}`))
+      const notificationApi = createNotificationApi(app)
+      pager = new Pager(app.getDataDirPath(), options, undefined, line => console.info(`[signalk-pager] ${line}`), notificationApi)
       pager.start().catch(error => app.setPluginError?.(`Pager startup: ${error.message}`))
       if (rules.size && app.subscriptionmanager?.subscribe) {
         app.subscriptionmanager.subscribe({ context: 'vessels.self', sourcePolicy: 'preferred',
@@ -66,7 +87,10 @@ module.exports = function pluginConstructor(app) {
               title: item.path, summary: String(item.value?.message || item.value?.state || 'Cleared'),
               observed_at: update.timestamp || new Date().toISOString() }
             const currentPager = pager
-            currentPager.submit(event)
+            let notificationId = null
+            try { if (active) notificationId = notificationApi?.idForPath(item.path, item.value) || null }
+            catch (error) { app.setPluginError?.(`Pager notification lookup: ${error.message}`) }
+            currentPager.submit(event, notificationId)
               .then(() => active && item.value?.status?.acknowledged === true
                 ? currentPager.acknowledgeNotification(item.path) : undefined)
               .catch(error => app.setPluginError?.(`Pager intake: ${error.message}`))
@@ -84,6 +108,7 @@ module.exports = function pluginConstructor(app) {
       router.post('/v1/events', async (req, res) => {
         if (!pager) return res.status(503).json({ error: 'Pager disabled' })
         if (!safeEqual(req.headers.authorization, `Bearer ${pager.options.intakeToken}`)) return res.status(401).json({ error: 'Unauthorized' })
+        if (req.body?.source === 'signalk') return res.status(400).json({ error: 'Signal K source is reserved for the notification subscription' })
         if (Number(req.headers['content-length'] || 0) > 8192 || JSON.stringify(req.body || {}).length > 8192) return res.status(413).json({ error: 'Event too large' })
         try { return res.status(202).json(await pager.submit(req.body)) }
         catch (error) { return res.status(['Pager queue full', 'Previous incident still closing'].includes(error.message) ? 503 : 400).json({ error: error.message }) }
@@ -97,3 +122,4 @@ module.exports = function pluginConstructor(app) {
   }
   return plugin
 }
+module.exports.createNotificationApi = createNotificationApi

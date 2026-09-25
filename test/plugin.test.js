@@ -58,3 +58,51 @@ test('Signal K acknowledgement is reconciled while silence alone does not acknow
   assert.equal(state.incidents[JSON.stringify(['signalk', 'notifications.environment.wind'])].state, 'open_unacked')
   plugin.stop()
 })
+
+test('notification adapter binds a unique server ID and rejects a replaced notification', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pager-plugin-id-'))
+  const notificationPath = 'notifications.navigation.anchor'
+  let onDelta
+  let currentId = 'server-1'
+  const acknowledgements = []
+  const app = { getDataDirPath: () => directory, setPluginStatus: () => {}, setPluginError: () => {},
+    notifications: {
+      getPath: () => ({ [currentId]: { path: notificationPath, context: 'vessels.self', value: { state: 'alarm', id: currentId } } }),
+      acknowledge: id => acknowledgements.push(id)
+    },
+    subscriptionmanager: { subscribe: (_spec, _unsubscribes, _error, callback) => { onDelta = callback } } }
+  const plugin = makePlugin(app)
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user',
+    notificationRules: [{ path: notificationPath, severity: 'wake' }] })
+  onDelta({ updates: [{ values: [{ path: notificationPath, value: { state: 'alarm', id: currentId } }] }] })
+  const stateFile = path.join(directory, 'pager-state.json')
+  for (let i = 0; i < 50; i++) {
+    if (fs.existsSync(stateFile) && JSON.parse(fs.readFileSync(stateFile, 'utf8')).incidents[JSON.stringify(['signalk', notificationPath])]?.notificationId) break
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'))
+  assert.equal(state.incidents[JSON.stringify(['signalk', notificationPath])].notificationId, 'server-1')
+  const { Pager } = require('../lib/pager')
+  plugin.stop()
+  const pager = new Pager(directory, { mode: 'active' }, undefined, undefined, makePlugin.createNotificationApi(app))
+  currentId = 'server-2'
+  await assert.rejects(() => pager.acknowledge(state.incidents[JSON.stringify(['signalk', notificationPath])].id, 'telegram:9'), /no longer active/)
+  assert.deepEqual(acknowledgements, [])
+})
+
+test('notification adapter writes only an active exact-path ACK', () => {
+  const notificationPath = 'notifications.navigation.anchor'
+  const writes = []
+  const app = { notifications: {
+    getPath: () => ({ 'server-1': { context: 'vessels.self', path: notificationPath,
+      value: { state: 'alarm', status: { canAcknowledge: true } } } }),
+    acknowledge: id => writes.push(id)
+  } }
+  const adapter = makePlugin.createNotificationApi(app)
+  assert.equal(adapter.idForPath(notificationPath, {}), 'server-1')
+  adapter.acknowledge('server-1', notificationPath)
+  assert.deepEqual(writes, ['server-1'])
+  assert.throws(() => adapter.acknowledge('server-1', 'notifications.environment.wind'), /no longer active/)
+  app.notifications.getPath = () => ({ 'server-1': { context: 'vessels.self', path: notificationPath, value: { state: 'normal' } } })
+  assert.throws(() => adapter.acknowledge('server-1', notificationPath), /no longer active/)
+})

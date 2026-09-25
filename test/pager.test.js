@@ -194,3 +194,68 @@ test('Signal K server acknowledgement cancels the matching notification page', a
   assert.equal(pager.status().open, 1)
   pager.stop()
 })
+
+test('Telegram ACK writes the matching Signal K notification before stopping the page', async () => {
+  const { pager, providers, calls } = fixture()
+  const writes = []
+  pager.notificationApi = { acknowledge: async (id, path) => { writes.push([id, path]) } }
+  const path = 'notifications.navigation.anchor'
+  const raised = { ...event('firing'), source: 'signalk', fingerprint: path }
+  const { id } = await pager.submit(raised, 'server-id-1')
+  await pager.tick()
+  providers.updates = async () => [{ update_id: 10, callback_query: {
+    id: 'ack-1', from: { id: 9 }, message: { chat: { id: 123 } }, data: `ack:${id}`
+  } }]
+  await pager.tick()
+  assert.deepEqual(writes, [['server-id-1', path]])
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', path])].state, 'open_acked')
+  for (let i = 0; i < 3; i++) await pager.tick()
+  assert.equal(calls.filter(call => call[0] === 'cancel').length, 1)
+})
+
+test('failed server ACK keeps Telegram alert open and reports the failure', async () => {
+  const { pager, providers, calls } = fixture()
+  pager.notificationApi = { acknowledge: async () => { throw new Error('cannot acknowledge') } }
+  const path = 'notifications.navigation.anchor'
+  const { id } = await pager.submit({ ...event('firing'), source: 'signalk', fingerprint: path }, 'server-id-1')
+  providers.updates = async () => [{ update_id: 10, callback_query: {
+    id: 'ack-1', from: { id: 9 }, message: { chat: { id: 123 } }, data: `ack:${id}`
+  } }]
+  await pager.tick()
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', path])].state, 'open_unacked')
+  assert.match(pager.status().lastError, /cannot acknowledge/)
+  assert.match(calls.find(call => call[0] === 'answerCallbackQuery')[1].text, /cannot acknowledge/)
+})
+
+test('Pushover receipt ACK updates Signal K and retries if the server rejects it', async () => {
+  const { pager, providers } = fixture()
+  const path = 'notifications.navigation.anchor'
+  const writes = []
+  let reject = true
+  pager.notificationApi = { acknowledge: async (id, notificationPath) => {
+    writes.push([id, notificationPath])
+    if (reject) throw new Error('server unavailable')
+  } }
+  await pager.submit({ ...event('firing'), source: 'signalk', fingerprint: path }, 'server-id-1')
+  await pager.tick()
+  providers.receipt = async () => ({ status: 1, acknowledged: 1, acknowledged_at: Math.floor(Date.now() / 1000), expired: 0 })
+  await pager.store.transaction(state => { state.incidents[JSON.stringify(['signalk', path])].lastReceiptPoll = 0 })
+  await pager.tick()
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', path])].state, 'open_unacked')
+  reject = false
+  await pager.tick()
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', path])].state, 'open_acked')
+  assert.deepEqual(writes, [['server-id-1', path], ['server-id-1', path]])
+  assert.equal(pager.store.state.jobs.some(job => job.type === 'pushover-cancel'), false)
+})
+
+test('replacement at the same Signal K path rejects the old Telegram button', async () => {
+  const { pager } = fixture()
+  const notificationPath = 'notifications.navigation.anchor'
+  const first = await pager.submit({ ...event('firing', 'first'), source: 'signalk', fingerprint: notificationPath }, 'server-1')
+  const second = await pager.submit({ ...event('firing', 'second'), source: 'signalk', fingerprint: notificationPath }, 'server-2')
+  assert.notEqual(first.id, second.id)
+  pager.notificationApi = { acknowledge: async () => { throw new Error('old button must not reach server') } }
+  await assert.rejects(() => pager.acknowledge(first.id, 'telegram:9'), /Incident not found/)
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', notificationPath])].notificationId, 'server-2')
+})
