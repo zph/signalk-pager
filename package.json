@@ -1,0 +1,13 @@
+{
+  "name": "signalk-pager",
+  "version": "0.1.0",
+  "description": "Pushover paging with Telegram incident context for Signal K",
+  "main": "index.js",
+  "license": "MIT",
+  "engines": { "node": ">=18" },
+  "keywords": ["signalk-node-server-plugin", "signalk-category-notification", "pushover", "telegram"],
+  "signalk-plugin-enabled-by-default": false,
+  "signalk": { "displayName": "Pager" },
+  "files": ["index.js", "lib", "README.md", "SPEC.md", "LICENSE"],
+  "scripts": { "test": "node --test" }
+}
