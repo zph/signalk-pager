@@ -13,6 +13,8 @@ Install or sideload this directory as a Signal K plugin, then enable **Pager** i
 - Before activation, a Pushover application token and user/group key.
 - Optionally, exact Signal K `notifications.*` paths and their pager severities. No Signal K path is routed by default.
 
+For a configured Signal K notification path, a server-side acknowledgement (including Binnacle's generic **Acknowledge** action) acknowledges the matching pager incident and cancels any Pushover emergency retries. A server clear/normal value resolves it. Binnacle's **Silence**, **Mute here**, and device-local collision/MOB/anchor acknowledgements are not pager acknowledgements. Telegram or Pushover acknowledgement currently updates the pager incident only; it does not write acknowledgement back to Signal K or Binnacle.
+
 The plugin is disabled by default. Once enabled, its operating mode defaults to **shadow**: it posts incident context to Telegram and writes a Signal K log entry showing the Pushover priority, retry interval, and expiry it would have used. It does not create Pushover pages. Set **Operating mode** to **active** explicitly to enable Pushover delivery. Existing shadow incidents are not paged simply by changing modes; a new firing observation is required. Returning to shadow cancels any outstanding Pushover emergency retries from active mode. State is written to Signal K's plugin data directory. Keep that directory persistent and private. No image, arbitrary log, or command is sent by this plugin.
 
 ## Event API

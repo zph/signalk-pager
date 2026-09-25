@@ -25,6 +25,8 @@ This first version runs **inside Signal K**. If Signal K or its host stops, the 
 
 The optional Signal K adapter subscribes only to exact configured `notifications.*` paths. Each path has an explicit pager severity. A normal or cleared value resolves the incident; an active value fires it. No paths are routed by default. The path, not changing message text, is the fingerprint. The pager must not subscribe to its own status paths.
 
+The adapter also treats `status.acknowledged: true` on a configured notification as acknowledgement of the matching pager incident. That covers Binnacle's server-side generic Acknowledge action and cancels Pushover retries. A server-side silence or device-local mute does not acknowledge the pager. Telegram and Pushover acknowledgement remain local to the pager in this version; writing them back into Signal K notification status is a later improvement.
+
 ## Severity and lifecycle
 
 | Severity | Telegram | Pushover |

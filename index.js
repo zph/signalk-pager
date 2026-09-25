@@ -65,7 +65,11 @@ module.exports = function pluginConstructor(app) {
               status: active ? 'firing' : 'resolved', severity: rules.get(item.path),
               title: item.path, summary: String(item.value?.message || item.value?.state || 'Cleared'),
               observed_at: update.timestamp || new Date().toISOString() }
-            pager.submit(event).catch(error => app.setPluginError?.(`Pager intake: ${error.message}`))
+            const currentPager = pager
+            currentPager.submit(event)
+              .then(() => active && item.value?.status?.acknowledged === true
+                ? currentPager.acknowledgeNotification(item.path) : undefined)
+              .catch(error => app.setPluginError?.(`Pager intake: ${error.message}`))
           }
         })
       }

@@ -181,3 +181,16 @@ test('switching from active to shadow cancels an outstanding emergency retry', a
   assert.equal(calls.filter(c => c[0] === 'pushover').length, 1)
   shadow.stop()
 })
+
+test('Signal K server acknowledgement cancels the matching notification page', async () => {
+  const { pager, calls } = fixture()
+  const raised = { ...event('firing', 'one'), source: 'signalk', fingerprint: 'notifications.navigation.anchor' }
+  await pager.submit(raised)
+  await pager.tick()
+  await pager.acknowledgeNotification('notifications.navigation.anchor')
+  for (let i = 0; i < 3; i++) await pager.tick()
+  assert.equal(calls.filter(c => c[0] === 'cancel').length, 1)
+  assert.equal(pager.store.state.incidents[JSON.stringify(['signalk', raised.fingerprint])].state, 'open_acked')
+  assert.equal(pager.status().open, 1)
+  pager.stop()
+})
