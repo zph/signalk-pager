@@ -16,6 +16,7 @@ function createNotificationApi(app) {
       if (!current || current.path !== path || current.context !== 'vessels.self' ||
           ['normal', 'nominal'].includes(current.value?.state)) throw new Error('Signal K notification is no longer active at this path')
       if (current.value?.status?.acknowledged === true) return
+      if (current.value?.status?.canAcknowledge !== true) throw new Error('Signal K notification cannot be acknowledged')
       app.notifications.acknowledge(id)
     },
     idForPath(path, value) {

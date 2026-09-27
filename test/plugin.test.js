@@ -103,6 +103,9 @@ test('notification adapter writes only an active exact-path ACK', () => {
   adapter.acknowledge('server-1', notificationPath)
   assert.deepEqual(writes, ['server-1'])
   assert.throws(() => adapter.acknowledge('server-1', 'notifications.environment.wind'), /no longer active/)
+  app.notifications.getPath = () => ({ 'server-1': { context: 'vessels.self', path: notificationPath,
+    value: { state: 'alarm', status: { canAcknowledge: false } } } })
+  assert.throws(() => adapter.acknowledge('server-1', notificationPath), /cannot be acknowledged/)
   app.notifications.getPath = () => ({ 'server-1': { context: 'vessels.self', path: notificationPath, value: { state: 'normal' } } })
   assert.throws(() => adapter.acknowledge('server-1', notificationPath), /no longer active/)
 })

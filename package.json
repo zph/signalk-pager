@@ -4,10 +4,19 @@
   "description": "Pushover paging with Telegram incident context for Signal K",
   "main": "index.js",
   "license": "MIT",
+  "author": "Zander Hill",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zph/signalk-pager.git"
+  },
+  "homepage": "https://github.com/zph/signalk-pager#readme",
+  "bugs": {
+    "url": "https://github.com/zph/signalk-pager/issues"
+  },
   "engines": { "node": ">=18" },
   "keywords": ["signalk-node-server-plugin", "signalk-category-notification", "pushover", "telegram"],
   "signalk-plugin-enabled-by-default": false,
   "signalk": { "displayName": "Pager" },
-  "files": ["index.js", "lib", "README.md", "SPEC.md", "LICENSE"],
+  "files": ["index.js", "lib", "README.md", "SPEC.md", "SECURITY.md", "LICENSE"],
   "scripts": { "test": "node --test" }
 }

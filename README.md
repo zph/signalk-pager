@@ -1,5 +1,7 @@
 # Signal K Pager
 
+[![CI](https://github.com/zph/signalk-pager/actions/workflows/ci.yml/badge.svg)](https://github.com/zph/signalk-pager/actions/workflows/ci.yml)
+
 Pushover carries urgent and repeating wake alerts once explicitly activated. Telegram carries incident context and an optional restricted acknowledgement button. The plugin also accepts events from other sources through an authenticated route.
 
 This first version runs **inside Signal K**. It cannot report a Signal K or host outage by itself. An independent external monitor is described in [SPEC.md](SPEC.md) as a later improvement.
@@ -46,3 +48,14 @@ Pushover iPhone Critical Alerts and Android DND exceptions must be enabled on th
 - The plugin does not monitor its own host or Signal K process. A standalone receiver or external monitor is a later improvement.
 - Provider timeouts can leave delivery uncertain. The status endpoint reports errors; inspect the provider apps before manually replaying an uncertain event.
 - State has fixed bounds. When full, the API rejects new events instead of silently dropping them; archive/pruning is a later improvement.
+
+## Development
+
+Signal K Pager has no runtime package dependencies. It requires Node.js 18 or newer.
+
+```sh
+npm test
+npm pack --dry-run
+```
+
+Security issues should be reported according to [SECURITY.md](SECURITY.md), not through a public issue.
