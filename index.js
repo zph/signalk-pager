@@ -2,6 +2,13 @@
 const crypto = require('node:crypto')
 const { Pager } = require('./lib/pager')
 
+const DEFAULT_NOTIFICATION_SEVERITY = {
+  alert: 'info',
+  warn: 'warning',
+  alarm: 'urgent',
+  emergency: 'wake'
+}
+
 function safeEqual(a, b) {
   const left = Buffer.from(String(a || ''))
   const right = Buffer.from(String(b || ''))
@@ -29,6 +36,14 @@ function createNotificationApi(app) {
   }
 }
 
+function notificationSeverity(path, value, routeAllNotifications, rules) {
+  if (typeof path !== 'string' || !path.startsWith('notifications.')) return null
+  if (path.startsWith('notifications.plugins.signalkPager')) return null
+  const override = rules.get(path)
+  if (override) return override === 'off' ? null : override
+  return routeAllNotifications ? DEFAULT_NOTIFICATION_SEVERITY[value?.state] || null : null
+}
+
 module.exports = function pluginConstructor(app) {
   let pager = null
   let unsubscribes = []
@@ -45,12 +60,14 @@ module.exports = function pluginConstructor(app) {
         telegramToken: { type: 'string', title: 'Telegram bot token', format: 'password' },
         telegramChatId: { type: 'string', title: 'Telegram chat ID' },
         allowedTelegramUsers: { type: 'string', title: 'Telegram user IDs permitted to acknowledge (comma-separated)' },
+        telegramEnabled: { type: 'boolean', title: 'Send incidents to Telegram', default: true, description: 'Enabled by default. Disable explicitly to operate without Telegram; shadow mode still requires Telegram.' },
         retrySeconds: { type: 'integer', title: 'Emergency retry seconds', default: 60, minimum: 30, maximum: 3600 },
         expireSeconds: { type: 'integer', title: 'Emergency expiry seconds', default: 3600, minimum: 60, maximum: 10800 },
-        notificationRules: { type: 'array', title: 'Signal K notification routes', default: [], maxItems: 30,
+        routeAllNotifications: { type: 'boolean', title: 'Route all Signal K notifications', default: true, description: 'Alert goes to Telegram; warn, alarm, and emergency also go to Pushover in active mode. Disable for configured paths only.' },
+        notificationRules: { type: 'array', title: 'Signal K notification overrides', default: [], maxItems: 30,
           items: { type: 'object', required: ['path', 'severity'], properties: {
             path: { type: 'string', title: 'Exact notifications.* path' },
-            severity: { type: 'string', title: 'Pager severity', enum: ['info', 'warning', 'urgent', 'wake'] }
+            severity: { type: 'string', title: 'Delivery override', enum: ['info', 'warning', 'urgent', 'wake', 'off'] }
           } }
         }
       }
@@ -59,35 +76,41 @@ module.exports = function pluginConstructor(app) {
       if (pager) return
       const options = { mode: 'shadow', ...input,
         allowedTelegramUsers: String(input.allowedTelegramUsers || '').split(',').map(s => s.trim()).filter(Boolean),
+        telegramEnabled: input.telegramEnabled !== false,
+        routeAllNotifications: input.routeAllNotifications !== false,
         retrySeconds: input.retrySeconds || 60, expireSeconds: input.expireSeconds || 3600 }
       if (!options.intakeToken || options.intakeToken.length < 24) throw new Error('Configure a 24+ character event API token')
       if (options.mode === 'active' && (!options.pushoverToken || !options.pushoverUser)) throw new Error('Configure Pushover application and user keys before activating')
       if (!['shadow', 'active'].includes(options.mode)) throw new Error('Invalid operating mode')
-      if (options.mode === 'shadow' && !options.telegramToken) throw new Error('Configure Telegram before enabling shadow mode')
-      if (options.telegramToken && (!options.telegramChatId || !options.allowedTelegramUsers.length)) throw new Error('Configure Telegram chat and allowed user IDs')
+      if (options.mode === 'shadow' && !options.telegramEnabled) throw new Error('Shadow mode requires Telegram')
+      if (options.telegramEnabled && (!options.telegramToken || !options.telegramChatId || !options.allowedTelegramUsers.length)) throw new Error('Configure Telegram token, chat, and allowed user IDs, or disable Telegram explicitly')
       if (options.retrySeconds < 30 || options.expireSeconds > 10800 || options.expireSeconds < options.retrySeconds) throw new Error('Invalid emergency retry settings')
       rules = new Map()
       for (const rule of options.notificationRules || []) {
-        if (!/^notifications\.[A-Za-z0-9_.-]+$/.test(rule.path) || !['info', 'warning', 'urgent', 'wake'].includes(rule.severity)) throw new Error('Invalid notification rule')
+        if (!/^notifications\.[A-Za-z0-9_.-]+$/.test(rule.path) || !['info', 'warning', 'urgent', 'wake', 'off'].includes(rule.severity)) throw new Error('Invalid notification rule')
         if (rule.path.startsWith('notifications.plugins.signalkPager')) throw new Error('Cannot page on own status')
         rules.set(rule.path, rule.severity)
       }
       const notificationApi = createNotificationApi(app)
       pager = new Pager(app.getDataDirPath(), options, undefined, line => console.info(`[signalk-pager] ${line}`), notificationApi)
       pager.start().catch(error => app.setPluginError?.(`Pager startup: ${error.message}`))
-      if (rules.size && app.subscriptionmanager?.subscribe) {
+      if ((options.routeAllNotifications || rules.size) && app.subscriptionmanager?.subscribe) {
         app.subscriptionmanager.subscribe({ context: 'vessels.self', sourcePolicy: 'preferred',
-          subscribe: [...rules.keys()].map(path => ({ path, policy: 'instant' })) },
+          subscribe: (options.routeAllNotifications ? ['notifications.*'] : [...rules.keys()]).map(path => ({ path, policy: 'instant' })) },
         unsubscribes, error => app.setPluginError?.(`Pager subscription failed: ${String(error)}`),
         delta => {
           for (const update of delta.updates || []) for (const item of update.values || []) {
-            if (!rules.has(item.path)) continue
+            const currentPager = pager
+            if (!currentPager) continue
             const active = item.value && !['normal', 'nominal'].includes(item.value.state)
+            const severity = notificationSeverity(item.path, item.value, options.routeAllNotifications, rules)
+            if (active && !severity) continue
+            if (active && severity === 'info' && !options.telegramEnabled) continue
+            if (!active && !severity && !currentPager.hasOpenIncident('signalk', item.path)) continue
             const event = { source: 'signalk', event_id: crypto.randomUUID(), fingerprint: item.path,
-              status: active ? 'firing' : 'resolved', severity: rules.get(item.path),
+              status: active ? 'firing' : 'resolved', severity: severity || 'info',
               title: item.path, summary: String(item.value?.message || item.value?.state || 'Cleared'),
               observed_at: update.timestamp || new Date().toISOString() }
-            const currentPager = pager
             let notificationId = null
             try { if (active) notificationId = notificationApi?.idForPath(item.path, item.value) || null }
             catch (error) { app.setPluginError?.(`Pager notification lookup: ${error.message}`) }
@@ -124,3 +147,4 @@ module.exports = function pluginConstructor(app) {
   return plugin
 }
 module.exports.createNotificationApi = createNotificationApi
+module.exports.notificationSeverity = notificationSeverity

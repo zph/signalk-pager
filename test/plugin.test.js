@@ -17,7 +17,7 @@ test('event route rejects missing token and accepts valid event durably', async 
   const routes = {}
   plugin.registerWithRouter({ post: (p, handler) => { routes[p] = handler }, get: (p, handler) => { routes[p] = handler } })
   assert.throws(() => plugin.start({ intakeToken: 'a'.repeat(32) }), /Configure Telegram/)
-  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user' })
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user', telegramEnabled: false })
   const body = { source: 'script', event_id: '1', fingerprint: 'fault', status: 'firing', severity: 'warning', title: 'Fault', summary: 'Check it', observed_at: new Date().toISOString() }
   const unauthorized = response()
   await routes['/v1/events']({ headers: {}, body }, unauthorized)
@@ -37,7 +37,7 @@ test('Signal K acknowledgement is reconciled while silence alone does not acknow
   const app = { getDataDirPath: () => directory, setPluginStatus: () => {}, setPluginError: () => {},
     subscriptionmanager: { subscribe: (_spec, _unsubscribes, _error, callback) => { onDelta = callback } } }
   const plugin = makePlugin(app)
-  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user',
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user', telegramEnabled: false,
     notificationRules: [
       { path: 'notifications.navigation.anchor', severity: 'wake' },
       { path: 'notifications.environment.wind', severity: 'warning' }
@@ -72,7 +72,7 @@ test('notification adapter binds a unique server ID and rejects a replaced notif
     },
     subscriptionmanager: { subscribe: (_spec, _unsubscribes, _error, callback) => { onDelta = callback } } }
   const plugin = makePlugin(app)
-  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user',
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user', telegramEnabled: false,
     notificationRules: [{ path: notificationPath, severity: 'wake' }] })
   onDelta({ updates: [{ values: [{ path: notificationPath, value: { state: 'alarm', id: currentId } }] }] })
   const stateFile = path.join(directory, 'pager-state.json')
@@ -108,4 +108,48 @@ test('notification adapter writes only an active exact-path ACK', () => {
   assert.throws(() => adapter.acknowledge('server-1', notificationPath), /cannot be acknowledged/)
   app.notifications.getPath = () => ({ 'server-1': { context: 'vessels.self', path: notificationPath, value: { state: 'normal' } } })
   assert.throws(() => adapter.acknowledge('server-1', notificationPath), /no longer active/)
+})
+
+test('default notification routing covers every raised grade with exact overrides', () => {
+  const severity = makePlugin.notificationSeverity
+  const rules = new Map([
+    ['notifications.navigation.anchor', 'wake'],
+    ['notifications.test.ignored', 'off']
+  ])
+  assert.equal(severity('notifications.advisory', { state: 'alert' }, true, rules), 'info')
+  assert.equal(severity('notifications.weather.wind', { state: 'warn' }, true, rules), 'warning')
+  assert.equal(severity('notifications.navigation.depth', { state: 'alarm' }, true, rules), 'urgent')
+  assert.equal(severity('notifications.mob', { state: 'emergency' }, true, rules), 'wake')
+  assert.equal(severity('notifications.navigation.anchor', { state: 'alert' }, true, rules), 'wake')
+  assert.equal(severity('notifications.test.ignored', { state: 'emergency' }, true, rules), null)
+  assert.equal(severity('notifications.unconfigured', { state: 'alarm' }, false, rules), null)
+  assert.equal(severity('notifications.plugins.signalkPager.health', { state: 'emergency' }, true, rules), null)
+})
+
+test('all Signal K notifications are subscribed by default', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pager-plugin-default-routing-'))
+  let subscription
+  const app = { getDataDirPath: () => directory, setPluginStatus: () => {}, setPluginError: () => {},
+    subscriptionmanager: { subscribe: spec => { subscription = spec } } }
+  const plugin = makePlugin(app)
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user', telegramEnabled: false })
+  assert.deepEqual(subscription.subscribe, [{ path: 'notifications.*', policy: 'instant' }])
+  plugin.stop()
+})
+
+test('explicitly disabling Telegram ignores Telegram-only alerts', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'pager-plugin-no-telegram-'))
+  let onDelta
+  const errors = []
+  const app = { getDataDirPath: () => directory, setPluginStatus: () => {}, setPluginError: error => errors.push(error),
+    subscriptionmanager: { subscribe: (_spec, _unsubscribes, _error, callback) => { onDelta = callback } } }
+  const plugin = makePlugin(app)
+  plugin.start({ mode: 'active', intakeToken: 'a'.repeat(32), pushoverToken: 'app', pushoverUser: 'user', telegramEnabled: false })
+  try {
+    onDelta({ updates: [{ values: [{ path: 'notifications.advisory', value: { state: 'alert', message: 'Heads up' } }] }] })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(errors, [])
+    assert.equal(fs.existsSync(path.join(directory, 'pager-state.json')), false,
+      'ignored alerts should not create durable incidents')
+  } finally { plugin.stop() }
 })

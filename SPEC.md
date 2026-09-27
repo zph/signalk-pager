@@ -1,12 +1,12 @@
 # Signal K Pager specification
 
 **Status:** Implemented first slice in this directory; phone delivery not yet verified with live credentials. Default operating mode is `shadow`.
-**Scope:** A Signal K plugin with one authenticated event endpoint, Pushover paging, Telegram context/ACK, and opt-in exact-path Signal K notification routes.
+**Scope:** A Signal K plugin with one authenticated event endpoint, Pushover paging, Telegram context/ACK, default Signal K notification routing, and exact-path overrides.
 
 ## Behavior
 
 ```text
-Configured Signal K notifications ─┐
+Signal K notifications ────────────┐
 Authenticated event API ────────────┼── Signal K Pager
                                     ├── durable incident/outbox state
                                     ├── Pushover: audible pager transport
@@ -23,7 +23,7 @@ This first version runs **inside Signal K**. If Signal K or its host stops, the 
 
 `GET /plugins/signalk-pager/v1/status` uses the same bearer token and returns open incident, unacknowledged wake, and pending job counts plus transport error status. Both routes inherit Signal K's network exposure; use a private network or authenticated tunnel and a long random bearer token.
 
-The optional Signal K adapter subscribes only to exact configured `notifications.*` paths. Each path has an explicit pager severity. A normal or cleared value resolves the incident; an active value fires it. No paths are routed by default. The path, not changing message text, is the fingerprint. The pager must not subscribe to its own status paths.
+The Signal K adapter subscribes to `notifications.*` by default. Every raised notification goes to Telegram. It maps `alert` to `info`, `warn` to `warning`, `alarm` to `urgent`, and `emergency` to `wake`, so warning and danger grades also use Pushover in active mode. Exact-path overrides can select another pager severity or `off`. Disabling default routing changes the adapter to configured paths only. A normal or nominal value resolves the incident. The path, not changing message text, is the fingerprint. The pager must not route its own status paths.
 
 The adapter treats `status.acknowledged: true` on a configured notification as acknowledgement of the matching pager incident. Telegram and Pushover ACKs use `app.notifications.acknowledge(id)` on the matching active notification before marking the pager incident acknowledged; Binnacle observes the resulting server status. The adapter resolves the ID from the notification manager, verifies that it still belongs to the same exact path, and refuses ambiguous, stale, unmanaged, or non-acknowledgeable notifications. A failure is reported and the pager remains unacknowledged so it can be retried. A server-side silence or device-local mute does not acknowledge the pager. ACK never clears the underlying condition.
 
@@ -43,8 +43,8 @@ One incident has `open_unacked`, `open_acked`, or `resolved` state. Repeated `fi
 ## Configuration and operator drill
 
 - Required: 24+ character event API token. `shadow` is the default mode; `active` must be selected explicitly and requires Pushover application token and user/group key.
-- For `shadow`: dedicated Telegram bot token, chat ID, and numeric user IDs allowed to ACK are required so the bake-in period has a real delivery channel. Telegram remains optional in `active`. Use a dedicated bot so another integration does not consume its updates.
-- Optional: exact-path Signal K notification rules. Review every `wake` rule; never map all Signal K alarms to emergency priority by default.
+- Telegram delivery is enabled by default and requires a dedicated bot token, chat ID, and numeric user IDs allowed to ACK. It can be disabled explicitly in active mode; shadow mode always requires it. Use a dedicated bot so another integration does not consume its updates.
+- Signal K notifications are routed by default using the state mapping above. Optional exact-path rules override or disable individual paths. Disable default routing to use exact-path rules as an allowlist. Review every `wake` override.
 - Phone setup: enable iOS Critical Alerts for Pushover in both iOS and the app, or configure Android DND exception. Provider priority `2` alone does not guarantee DND bypass.
 
 During bake-in, verify Telegram delivery and inspect `shadow` log entries for proposed priority, retry, and expiry. Changing to `active` does not retroactively page existing shadow incidents; a fresh firing observation is required. Returning to `shadow` cancels any outstanding emergency retries. Before relying on the pager, send a controlled active-mode test event, observe the phone under mute/Focus, wait for one repeat, acknowledge it, and verify retries stop. Send a separate resolved event and verify the Telegram incident closes. Test with the actual Pushover destination and Telegram chat; mocks cannot prove a phone wakes a person.
